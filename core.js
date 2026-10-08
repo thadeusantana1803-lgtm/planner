@@ -13,6 +13,8 @@
     const i = monthIdx(s) + n;
     return `${Math.floor(i / 12)}-${pad((i % 12) + 1)}-01`;
   };
+  // Domingo da semana que contém a data (mesma lógica do calendário do mês).
+  const startOfWeek = (s) => { const d = fromYmd(s); d.setDate(d.getDate() - d.getDay()); return ymd(d); };
 
   /* ---------- Pendências e alerta ----------
      Pendência: tarefa não concluída cuja data é de um mês anterior ao atual.
@@ -79,6 +81,24 @@
     const lum = (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
     return lum > 0.62 ? '#14213D' : '#FFFFFF';
   }
+  // No modo escuro, cores muito escuras ganham um pouco de brilho para não sumirem no fundo.
+  function lift(hex, minL = 0.5) {
+    const [h, s, l] = hexToHsl(hex);
+    return l >= minL ? hex : hslToHex(h, s, minL);
+  }
+
+  /* ---------- Paletas do app (fundo, cartões, texto) ----------
+     Cada uma tem versão clara e escura: [fundo, cartão, texto, texto 2, linhas, realce]. */
+  const mk = (a) => ({ bg: a[0], surface: a[1], ink: a[2], ink2: a[3], line: a[4], raise: a[5] });
+  const PALETAS = {
+    marinho:  { nome: 'Marinho',  claro: mk(['#F5F6F8', '#FFFFFF', '#14213D', '#5B6577', '#E3E6EC', '#FFFFFF']), escuro: mk(['#000000', '#1C1C1E', '#F2F2F7', '#9A9AA2', '#38383A', '#2C2C2E']) },
+    grafite:  { nome: 'Grafite',  claro: mk(['#F2F2F2', '#FFFFFF', '#1D1D1F', '#6E6E73', '#E0E0E0', '#FFFFFF']), escuro: mk(['#0D0D0D', '#1E1E1E', '#EDEDED', '#A0A0A0', '#333333', '#2A2A2A']) },
+    oceano:   { nome: 'Oceano',   claro: mk(['#EEF5F8', '#FFFFFF', '#0B3C5D', '#4F6D7F', '#D5E4EC', '#FFFFFF']), escuro: mk(['#06121A', '#0F2230', '#E3F1F8', '#8FB0C2', '#1E3A4C', '#19364A']) },
+    floresta: { nome: 'Floresta', claro: mk(['#F0F5F0', '#FFFFFF', '#1B4332', '#5A7466', '#D8E5DB', '#FFFFFF']), escuro: mk(['#070F0A', '#12211A', '#E4F2E8', '#93B09F', '#22382C', '#1C3328']) },
+    ameixa:   { nome: 'Ameixa',   claro: mk(['#F6F1F7', '#FFFFFF', '#4A1942', '#7A647A', '#E7DBE8', '#FFFFFF']), escuro: mk(['#0F0710', '#231226', '#F3E6F5', '#B497B8', '#3A2340', '#331C38']) },
+    areia:    { nome: 'Areia',    claro: mk(['#F7F3EC', '#FFFDF8', '#3D2F1F', '#7A6A55', '#E8DFD0', '#FFFDF8']), escuro: mk(['#100C07', '#221B12', '#F4EBDD', '#B3A48C', '#3A3023', '#30271B']) },
+  };
+  const PALETA_PADRAO = 'marinho';
 
   /* ---------- Calendário (.ics) ---------- */
   const stamp = (dateStr, hh, mm) => {
@@ -122,9 +142,9 @@
   });
 
   const api = {
-    pad, ymd, fromYmd, addDays, monthIdx, firstOfMonth, addMonthsFirst,
+    pad, ymd, fromYmd, addDays, monthIdx, firstOfMonth, addMonthsFirst, startOfWeek,
     isPendencia, isAtrasadaMes, mesesAtraso, adiamentos, nivel, postpone,
-    shade, textOn, stamp, buildIcs, seedState, SEED_CATS,
+    shade, textOn, lift, PALETAS, PALETA_PADRAO, stamp, buildIcs, seedState, SEED_CATS,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.PlannerCore = api;

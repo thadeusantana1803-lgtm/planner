@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const C = window.PlannerCore;
-  const { ymd, fromYmd, addDays, firstOfMonth, addMonthsFirst, isPendencia, isAtrasadaMes, adiamentos, nivel, postpone, shade, textOn, buildIcs, stamp } = C;
+  const { ymd, fromYmd, addDays, addMonthsFirst, startOfWeek, isPendencia, isAtrasadaMes, adiamentos, nivel, postpone, shade, textOn, lift, buildIcs, stamp } = C;
 
   const KEY = 'planner_v1';
   const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
@@ -27,7 +27,31 @@
     return C.seedState();
   }
   let S = load();
-  const ui = { tab: 'hoje', mes: null, dia: null, sheet: null, lastCat: null };
+  const ui = { tab: 'hoje', mes: null, dia: null, sem: null, sheet: null, lastCat: null };
+
+  /* ---------- Aparência: modo (automático/claro/escuro) e paleta ---------- */
+  const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  const isDark = () => {
+    const t = S.cfg.tema || 'auto';
+    return t === 'escuro' || (t === 'auto' && !!(mq && mq.matches));
+  };
+  // No escuro, as cores das categorias mais escuras ganham brilho para continuarem visíveis.
+  const vc = (hex) => (isDark() ? lift(hex) : hex);
+  const paletaAtual = () => C.PALETAS[S.cfg.paleta] || C.PALETAS[C.PALETA_PADRAO];
+  function aplicarTema() {
+    const dark = isDark(), modo = dark ? 'escuro' : 'claro', p = paletaAtual()[modo];
+    const set = (k, v) => document.documentElement.style.setProperty(k, v);
+    set('--bg', p.bg); set('--surface', p.surface); set('--raise', p.raise);
+    set('--ink', p.ink); set('--ink2', p.ink2); set('--line', p.line);
+    set('--tile', dark ? `linear-gradient(180deg, ${p.raise}, ${p.surface})` : p.surface);
+    set('--on-ink', textOn(p.ink));
+    set('--warn-bg', dark ? '#3A2E10' : '#FFF4DB'); set('--warn-ink', dark ? '#FFD479' : '#5C4200'); set('--warn-t', dark ? '#FFB340' : '#9A6700');
+    set('--urg-bg', dark ? '#3F1715' : '#FFE3E0'); set('--urg-ink', dark ? '#FFB4AD' : '#7A1410'); set('--urg-t', dark ? '#FF6961' : '#C62828');
+    set('--scrim', dark ? 'rgba(0,0,0,.6)' : 'rgba(10,16,30,.45)'); set('--shadow', dark ? 'rgba(0,0,0,.4)' : 'rgba(20,33,61,.05)');
+    set('color-scheme', dark ? 'dark' : 'light');
+    const m = document.querySelector('meta[name="theme-color"]');
+    if (m) m.setAttribute('content', p.bg);
+  }
 
   function save() {
     try { localStorage.setItem(KEY, JSON.stringify(S)); }
@@ -43,7 +67,7 @@
 
   const cat = (id) => S.cats.find((c) => c.id === id);
   const rootOf = (c) => (c && c.parent ? cat(c.parent) || c : c);
-  const catColor = (id) => (cat(id) ? cat(id).cor : '#8A93A3');
+  const catColor = (id) => vc(cat(id) ? cat(id).cor : '#8A93A3');
   const catName = (id) => {
     const c = cat(id);
     if (!c) return 'Sem categoria';
@@ -73,22 +97,25 @@
         <div class="tm"><span class="tag">${esc(catIcon(t.cat))} ${esc(catName(t.cat))}</span>${data}${alerta}</div>${acoes}</div></div>`;
   }
 
+  function pendBanner(today) {
+    const pend = S.tasks.filter((t) => isPendencia(t, today));
+    if (!pend.length) return '';
+    const urg = pend.filter((t) => nivel(t, today) >= 2).length;
+    return `<button class="banner ${urg ? 'urg' : ''}" data-action="tab" data-tab="pend"><span class="bi">${urg ? '🔥' : '⚠️'}</span>
+      <span><b>${pend.length} ${pend.length > 1 ? 'pendências' : 'pendência'} de meses anteriores</b>
+      <small>${urg ? `${urg} ${urg > 1 ? 'urgentes' : 'urgente'} · toque para resolver` : 'Toque para resolver'}</small></span></button>`;
+  }
+
   /* ---------- Telas ---------- */
   function viewHoje(today) {
     const d = fromYmd(today);
     const hoje = S.tasks.filter((t) => t.data === today).sort(byOrder);
     const feitas = hoje.filter((t) => t.feito).length;
-    const pend = S.tasks.filter((t) => isPendencia(t, today));
     const atras = S.tasks.filter((t) => isAtrasadaMes(t, today)).sort((a, b) => (a.data < b.data ? -1 : 1));
     let h = `<header class="hdr"><div class="hsub">${DIAS[d.getDay()]}</div><h1>${d.getDate()} de ${MESES[d.getMonth()]}</h1>`;
     if (hoje.length) h += `<div class="prog"><div class="bar"><i style="width:${Math.round((feitas / hoje.length) * 100)}%"></i></div><span>${feitas} de ${hoje.length} feitas</span></div>`;
     h += '</header>';
-    if (pend.length) {
-      const urg = pend.filter((t) => nivel(t, today) >= 2).length;
-      h += `<button class="banner ${urg ? 'urg' : ''}" data-action="tab" data-tab="pend"><span class="bi">${urg ? '🔥' : '⚠️'}</span>
-        <span><b>${pend.length} ${pend.length > 1 ? 'pendências' : 'pendência'} de meses anteriores</b>
-        <small>${urg ? `${urg} ${urg > 1 ? 'urgentes' : 'urgente'} · toque para resolver` : 'Toque para resolver'}</small></span></button>`;
-    }
+    h += pendBanner(today);
     if (atras.length) h += `<h2 class="sec">Atrasadas neste mês</h2>` + atras.map((t) => taskRow(t, today, { date: true })).join('');
     h += `<h2 class="sec">Hoje</h2>`;
     h += hoje.length ? hoje.map((t) => taskRow(t, today)).join('') : empty('Nada marcado para hoje.', 'Toque no + para adicionar uma tarefa.');
@@ -113,7 +140,7 @@
     });
     const chips = Object.keys(porCat).filter((k) => cat(k)).map((k) => {
       const c = cat(k);
-      return `<span class="chip" style="--c:${c.cor}">${esc(c.icone || '')} ${porCat[k].d}/${porCat[k].t}</span>`;
+      return `<span class="chip" style="--c:${vc(c.cor)}">${esc(c.icone || '')} ${porCat[k].d}/${porCat[k].t}</span>`;
     }).join('');
 
     let h = `<div class="mhead"><h1>${cap(MESES[m - 1])} ${y}</h1><div class="mnav">
@@ -137,6 +164,41 @@
     return h;
   }
 
+  // Cor do nome de cada dia nos balões (Dom → Sáb), no estilo do widget do iOS.
+  const DIA_COR = ['#FF453A', '#0A84FF', '#5E5CE6', '#BF5AF2', '#32ADE6', '#30D158', '#FF9F0A'];
+
+  function viewSemana(today) {
+    if (!ui.sem) ui.sem = startOfWeek(today);
+    const ini = ui.sem, fim = addDays(ini, 6), di = fromYmd(ini), df = fromYmd(fim);
+    const titulo = di.getMonth() === df.getMonth()
+      ? `${di.getDate()} a ${df.getDate()} de ${MES_ABR[df.getMonth()]}`
+      : `${di.getDate()} ${MES_ABR[di.getMonth()]} a ${df.getDate()} ${MES_ABR[df.getMonth()]}`;
+    const tasks = S.tasks.filter((t) => t.data >= ini && t.data <= fim);
+    const feitas = tasks.filter((t) => t.feito).length;
+    let h = `<div class="mhead"><h1>${titulo}</h1><div class="mnav">
+      <button data-action="sem-hoje" class="hoje" aria-label="Ir para esta semana">Hoje</button>
+      <button data-action="sem-prev" aria-label="Semana anterior">‹</button><button data-action="sem-next" aria-label="Próxima semana">›</button></div></div>`;
+    h += `<div class="mstat">${tasks.length ? `${feitas} de ${tasks.length} tarefas concluídas na semana` : 'Nenhuma tarefa nesta semana'}</div>`;
+    h += pendBanner(today);
+    h += '<div class="wk">';
+    for (let i = 0; i < 7; i++) {
+      const iso = addDays(ini, i), d = fromYmd(iso);
+      const dts = tasks.filter((t) => t.data === iso).sort(byOrder);
+      const abertas = dts.filter((t) => !t.feito).length;
+      const lim = dts.length > 4 ? 3 : dts.length; // cabem 4 linhas: 3 tarefas + "+N mais"
+      const itens = dts.slice(0, lim).map((t) => {
+        const n = nivel(t, today);
+        return `<div class="wi ${t.feito ? 'f' : ''}" style="--c:${catColor(t.cat)}"><i></i><span>${n === 2 ? '🔥 ' : n === 1 ? '⚠️ ' : ''}${esc(t.titulo)}</span></div>`;
+      }).join('');
+      const mais = dts.length > lim ? `<div class="wi mais">+${dts.length - lim} mais</div>` : '';
+      h += `<button class="wt ${i === 6 ? 'wide' : ''} ${iso === today ? 'hoje' : ''}" style="--dc:${vc(DIA_COR[i])}" data-action="open-day" data-d="${iso}">
+        <div class="wh"><span class="wn">${DIAS[i]}</span><span class="wc">${abertas}</span></div>
+        <div class="wd">${iso === today ? 'Hoje · ' : ''}${d.getDate()} ${MES_ABR[d.getMonth()]}</div>
+        <div class="wl">${dts.length ? itens + mais : '<div class="wz">Nenhuma tarefa</div>'}</div></button>`;
+    }
+    return h + '</div>';
+  }
+
   function viewPend(today) {
     const lista = S.tasks.filter((t) => isPendencia(t, today))
       .sort((a, b) => (nivel(b, today) - nivel(a, today)) || (a.data < b.data ? -1 : 1));
@@ -154,10 +216,10 @@
     ordered.forEach((c) => {
       const subs = S.cats.filter((s) => s.parent === c.id);
       const n = count([c.id, ...subs.map((s) => s.id)]);
-      h += `<button class="crow ${c.ativa ? '' : 'off'}" style="--c:${c.cor}" data-action="cat-edit" data-id="${c.id}">
+      h += `<button class="crow ${c.ativa ? '' : 'off'}" style="--c:${vc(c.cor)}" data-action="cat-edit" data-id="${c.id}">
         <span class="ci">${esc(c.icone || '•')}</span><span class="cn">${esc(c.nome)}</span><span class="cc">${n ? n + ' em aberto' : ''}</span></button>`;
       subs.forEach((s) => {
-        h += `<button class="csub ${s.ativa ? '' : 'off'}" style="--c:${s.cor}" data-action="cat-edit" data-id="${s.id}">
+        h += `<button class="csub ${s.ativa ? '' : 'off'}" style="--c:${vc(s.cor)}" data-action="cat-edit" data-id="${s.id}">
           <span class="ci">${esc(s.icone || c.icone || '•')}</span><span class="cn">${esc(s.nome)}</span><span class="cc">${count([s.id]) ? count([s.id]) + ' em aberto' : ''}</span></button>`;
       });
       h += `<button class="addsub" data-action="cat-sub" data-id="${c.id}">+ Subcategoria</button>`;
@@ -166,7 +228,21 @@
   }
 
   function viewCfg() {
-    return `<header class="hdr"><div class="hsub">Planner · versão 1</div><h1>Ajustes</h1></header>
+    const modo = S.cfg.tema || 'auto', ativa = S.cfg.paleta && C.PALETAS[S.cfg.paleta] ? S.cfg.paleta : C.PALETA_PADRAO;
+    const mv = isDark() ? 'escuro' : 'claro';
+    const modos = [['auto', 'Automático'], ['claro', 'Claro'], ['escuro', 'Escuro']]
+      .map(([v, r]) => `<button class="${modo === v ? 'on' : ''}" data-action="tema" data-v="${v}">${r}</button>`).join('');
+    const paletas = Object.entries(C.PALETAS).map(([k, p]) => {
+      const c = p[mv];
+      return `<button class="pal ${ativa === k ? 'on' : ''}" style="--pb:${c.bg};--ps:${c.surface};--pi:${c.ink};--p2:${c.ink2}" data-action="paleta" data-v="${k}" aria-label="Paleta ${esc(p.nome)}">
+        <span class="pv"><i></i></span>${esc(p.nome)}</button>`;
+    }).join('');
+    return `<header class="hdr"><div class="hsub">Planner · versão 2</div><h1>Ajustes</h1></header>
+    <section class="card"><h3>Aparência</h3>
+      <p>Automático acompanha o modo claro ou escuro do iPhone.</p>
+      <div class="seg">${modos}</div>
+      <p style="margin-top:14px">Paleta do app. As cores de cada categoria continuam as que você definiu.</p>
+      <div class="pals">${paletas}</div></section>
     <section class="card"><h3>Lembretes no Calendário</h3>
       <p>O iPhone não permite que um app instalado pela web avise sozinho quando está fechado. Por isso os lembretes usam o app Calendário, que toca o alarme de verdade.</p>
       <label class="f" for="cfg-hora">Horário dos lembretes</label>
@@ -187,7 +263,7 @@
     const sel = rootOf(cat(d.cat));
     const roots = S.cats.filter((c) => !c.parent && (c.ativa || (sel && sel.id === c.id)));
     const subs = sel ? S.cats.filter((c) => c.parent === sel.id && (c.ativa || c.id === d.cat)) : [];
-    const pill = (c, par) => `<button type="button" class="pill ${d.cat === c.id ? 'on' : par ? 'par' : ''}" style="--c:${c.cor};--on:${textOn(c.cor)}" data-action="pick-cat" data-id="${c.id}">${esc(c.icone || '')} ${esc(c.nome)}</button>`;
+    const pill = (c, par) => `<button type="button" class="pill ${d.cat === c.id ? 'on' : par ? 'par' : ''}" style="--c:${vc(c.cor)};--on:${textOn(vc(c.cor))}" data-action="pick-cat" data-id="${c.id}">${esc(c.icone || '')} ${esc(c.nome)}</button>`;
     return `<h2>${t ? 'Editar tarefa' : 'Nova tarefa'}</h2>
       <label class="f" for="f-titulo">O que precisa ser feito?</label>
       <input id="f-titulo" type="text" value="${esc(d.titulo)}" placeholder="Ex.: Marcar consulta" autocomplete="off" ${t ? '' : 'autofocus'}>
@@ -218,6 +294,14 @@
       <div class="row"><button class="btn primary" data-action="post-date" data-id="${t.id}">Reagendar para esta data</button></div>`;
   }
 
+  function sheetDia(s, today) {
+    const d = fromYmd(s.d);
+    const lista = S.tasks.filter((t) => t.data === s.d).sort(byOrder);
+    return `<h2>${DIAS[d.getDay()]}, ${d.getDate()} de ${MESES[d.getMonth()]}</h2>
+      ${lista.length ? lista.map((t) => taskRow(t, today)).join('') : empty('Sem tarefas neste dia.', 'Adicione a primeira abaixo.')}
+      <div class="row"><button class="btn primary" data-action="new-task-day" data-d="${s.d}">+ Adicionar tarefa neste dia</button></div>`;
+  }
+
   function sheetCat(s) {
     const d = s.draft, pai = d.parent ? cat(d.parent) : null;
     return `<h2>${s.id ? (pai ? 'Editar subcategoria' : 'Editar categoria') : (pai ? 'Nova subcategoria' : 'Nova categoria')}</h2>
@@ -233,7 +317,7 @@
   function renderSheet(today) {
     const el = document.getElementById('sheet'), s = ui.sheet;
     if (!s) { el.innerHTML = ''; el.hidden = true; return; }
-    const body = { task: sheetTask, post: sheetPost, cat: sheetCat }[s.type](s, today);
+    const body = { task: sheetTask, post: sheetPost, cat: sheetCat, dia: sheetDia }[s.type](s, today);
     el.innerHTML = `<div class="backdrop" data-action="close-sheet"><div class="sheet ${s.fresh ? 'enter' : ''}" role="dialog" aria-modal="true">${body}</div></div>`;
     s.fresh = false;
     s.rendered = true;
@@ -249,12 +333,13 @@
 
   function render() {
     syncDraft();
+    aplicarTema();
     const today = ymd(new Date());
-    document.getElementById('view').innerHTML = { hoje: viewHoje, mes: viewMes, pend: viewPend, cats: viewCats, cfg: viewCfg }[ui.tab](today);
+    document.getElementById('view').innerHTML = { hoje: viewHoje, sem: viewSemana, mes: viewMes, pend: viewPend, cats: viewCats, cfg: viewCfg }[ui.tab](today);
     document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
     const n = S.tasks.filter((t) => isPendencia(t, today)).length;
     const bd = document.getElementById('pendBadge'); bd.textContent = n; bd.hidden = !n;
-    document.getElementById('fab').hidden = !['hoje', 'mes', 'pend'].includes(ui.tab);
+    document.getElementById('fab').hidden = !['hoje', 'sem', 'mes', 'pend'].includes(ui.tab);
     renderSheet(today);
   }
 
@@ -299,10 +384,13 @@
   }
 
   /* ---------- Ações ---------- */
-  function abrirNovaTarefa(today) {
+  function abrirNovaTarefa(today, dataFixa) {
     const ativas = S.cats.filter((c) => !c.parent && c.ativa);
     const cat0 = (ui.lastCat && cat(ui.lastCat) && cat(ui.lastCat).ativa) ? ui.lastCat : (ativas[0] && ativas[0].id) || '';
-    const data = ui.tab === 'mes' && ui.dia ? ui.dia : today;
+    let data = today;
+    if (dataFixa) data = dataFixa;
+    else if (ui.tab === 'mes' && ui.dia) data = ui.dia;
+    else if (ui.tab === 'sem' && ui.sem && (today < ui.sem || today > addDays(ui.sem, 6))) data = ui.sem;
     ui.sheet = { type: 'task', id: null, fresh: true, draft: { titulo: '', cat: cat0, data, nota: '' } };
   }
 
@@ -321,6 +409,7 @@
     }
     ui.lastCat = d.cat;
     if (ui.tab === 'mes') { ui.mes = d.data.slice(0, 7); ui.dia = d.data; }
+    if (ui.tab === 'sem') ui.sem = startOfWeek(d.data);
     ui.sheet = null; save(); toast('Tarefa salva'); render();
   }
 
@@ -364,6 +453,13 @@
         if (tarefa) { postpone(tarefa, v, today); ui.sheet = null; save(); toast(`Reagendada para ${dataCurta(v)}`); render(); }
         break;
       }
+      case 'sem-prev': ui.sem = addDays(ui.sem || startOfWeek(today), -7); render(); break;
+      case 'sem-next': ui.sem = addDays(ui.sem || startOfWeek(today), 7); render(); break;
+      case 'sem-hoje': ui.sem = startOfWeek(today); render(); break;
+      case 'open-day': ui.sheet = { type: 'dia', d: el.dataset.d, fresh: true }; render(); break;
+      case 'new-task-day': abrirNovaTarefa(today, el.dataset.d); render(); break;
+      case 'tema': S.cfg.tema = el.dataset.v; save(); render(); break;
+      case 'paleta': S.cfg.paleta = el.dataset.v; save(); render(); break;
       case 'pick-day': ui.dia = el.dataset.d; render(); break;
       case 'mes-prev': ui.mes = addMonthsFirst(ui.mes + '-01', -1).slice(0, 7); ui.dia = null; render(); break;
       case 'mes-next': ui.mes = addMonthsFirst(ui.mes + '-01', 1).slice(0, 7); ui.dia = null; render(); break;
@@ -408,6 +504,10 @@
     if (e.key === 'Enter' && e.target.id === 'f-titulo') { e.preventDefault(); salvarTarefa(ymd(new Date())); }
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+  if (mq) {
+    const seguir = () => { if ((S.cfg.tema || 'auto') === 'auto') render(); }; // iPhone mudou de claro/escuro
+    if (mq.addEventListener) mq.addEventListener('change', seguir); else if (mq.addListener) mq.addListener(seguir);
+  }
 
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));

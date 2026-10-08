@@ -1,5 +1,5 @@
 /* Service worker: deixa o app abrir sem internet e atualiza em segundo plano. */
-const CACHE = 'planner-v1';
+const CACHE = 'planner-v2';
 const ARQUIVOS = [
   './', 'index.html', 'styles.css', 'core.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',

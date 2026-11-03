@@ -20,12 +20,13 @@
      Pendência: tarefa não concluída cuja data é de um mês anterior ao atual.
      Adiamentos = reagendamentos feitos por você + meses de atraso.
      Nível: 0 normal · 1 atenção (1ª vez) · 2 urgente (2ª vez em diante). */
-  const isPendencia = (t, today) => !t.feito && t.data < firstOfMonth(today);
-  const isAtrasadaMes = (t, today) => !t.feito && t.data < today && t.data >= firstOfMonth(today);
+  // Ocorrências de rotina (t.rotina) nunca viram pendência nem recebem alerta.
+  const isPendencia = (t, today) => !t.rotina && !t.feito && t.data < firstOfMonth(today);
+  const isAtrasadaMes = (t, today) => !t.rotina && !t.feito && t.data < today && t.data >= firstOfMonth(today);
   const mesesAtraso = (t, today) => (isPendencia(t, today) ? monthIdx(today) - monthIdx(t.data) : 0);
   const adiamentos = (t, today) => (t.adiamentos || 0) + mesesAtraso(t, today);
   const nivel = (t, today) => {
-    if (t.feito) return 0;
+    if (t.feito || t.rotina) return 0;
     const n = adiamentos(t, today);
     return n >= 2 ? 2 : n;
   };
@@ -35,6 +36,42 @@
     t.data = novaData;
     return t;
   };
+
+  /* ---------- Horários ---------- */
+  const toMin = (hhmm) => { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; };
+  const fromMin = (n) => { const x = ((n % 1440) + 1440) % 1440; return `${pad(Math.floor(x / 60))}:${pad(x % 60)}`; };
+  const somaMin = (hhmm, min) => fromMin(toMin(hhmm) + min);
+  const DURACOES = [[0, 'Sem duração'], [15, '15 min'], [30, '30 min'], [45, '45 min'], [60, '1 h'], [90, '1 h 30'], [120, '2 h'], [180, '3 h'], [240, '4 h']];
+
+  /* ---------- Rotinas ----------
+     Uma rotina é um molde: { tipo: 'dia'|'sem'|'mes', dias: [0..6], diaMes, inicio, fim, excecoes: [datas], feitas: {data: true} }.
+     As ocorrências são calculadas na hora, não ficam gravadas uma a uma. */
+  function ocorre(r, d) {
+    if (d < r.inicio || (r.fim && d > r.fim)) return false;
+    if (r.excecoes && r.excecoes.includes(d)) return false;
+    if (r.tipo === 'dia') return true;
+    if (r.tipo === 'sem') return (r.dias || []).includes(fromYmd(d).getDay());
+    if (r.tipo === 'mes') {
+      const dt = fromYmd(d);
+      const ultimo = new Date(dt.getFullYear(), dt.getMonth() + 1, 0).getDate();
+      return dt.getDate() === Math.min(Number(r.diaMes) || 1, ultimo); // mês curto usa o último dia
+    }
+    return false;
+  }
+  function ocorrencias(r, de, ate) {
+    const out = [];
+    const fim = r.fim && r.fim < ate ? r.fim : ate;
+    for (let d = de < r.inicio ? r.inicio : de; d <= fim; d = addDays(d, 1)) if (ocorre(r, d)) out.push(d);
+    return out;
+  }
+  const BYDAY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+  function rruleDe(r) {
+    let s = r.tipo === 'dia' ? 'FREQ=DAILY'
+      : r.tipo === 'sem' ? 'FREQ=WEEKLY;BYDAY=' + (r.dias || []).slice().sort().map((i) => BYDAY[i]).join(',')
+        : 'FREQ=MONTHLY;BYMONTHDAY=' + (Number(r.diaMes) || 1);
+    if (r.fim) s += ';UNTIL=' + r.fim.replace(/-/g, '') + 'T235959';
+    return s;
+  }
 
   /* ---------- Cores ---------- */
   function hexToHsl(hex) {
@@ -113,7 +150,8 @@
       L.push('BEGIN:VEVENT', 'UID:' + e.uid, 'DTSTAMP:' + nowUtc, 'DTSTART:' + e.start, 'DTEND:' + e.end, 'SUMMARY:' + icsText(e.summary));
       if (e.desc) L.push('DESCRIPTION:' + icsText(e.desc));
       if (e.rrule) L.push('RRULE:' + e.rrule);
-      L.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsText(e.summary), 'TRIGGER:-PT0M', 'END:VALARM', 'END:VEVENT');
+      (e.exdates || []).forEach((x) => L.push('EXDATE:' + x));
+      L.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsText(e.summary), 'TRIGGER:' + (e.alarm || '-PT0M'), 'END:VALARM', 'END:VEVENT');
     }
     L.push('END:VCALENDAR');
     return L.join('\r\n') + '\r\n';
@@ -135,16 +173,58 @@
     ['voluntariado', 'Voluntariado', '#8CC63F', '🤝'],
   ];
   const seedState = () => ({
-    v: 1,
+    v: 3,
     cfg: { hora: '09:00' },
     cats: SEED_CATS.map(([id, nome, cor, icone]) => ({ id, nome, cor, icone, parent: null, ativa: true })),
     tasks: [],
+    rotinas: [],
+    viagens: [],
   });
+  // Dados de versões anteriores ganham os campos novos, sem perder nada.
+  function normalizar(o) {
+    o.cfg = o.cfg || {};
+    if (!o.cfg.hora) o.cfg.hora = '09:00';
+    if (!Array.isArray(o.rotinas)) o.rotinas = [];
+    if (!Array.isArray(o.viagens)) o.viagens = [];
+    o.v = 3;
+    return o;
+  }
+
+  /* ---------- Checklist de viagem ----------
+     Níveis: o = obrigatório · i = importante · r = recomendado. */
+  const NIVEIS_VIAGEM = [
+    { id: 'o', nome: 'Obrigatórios', emoji: '🔴', cor: '#D93636' },
+    { id: 'i', nome: 'Importantes', emoji: '🟡', cor: '#E0A100' },
+    { id: 'r', nome: 'Recomendados', emoji: '🟢', cor: '#2E9E5B' },
+  ];
+  const MODELO_VIAGEM = {
+    base: {
+      o: ['Documento de identificação com foto (RG ou CNH)', 'Passagens ou reservas de transporte', 'Hospedagem confirmada', 'Cartões e dinheiro', 'Medicamentos de uso contínuo', 'Carregador do celular'],
+      i: ['Roupas para todos os dias', 'Itens de higiene pessoal', 'Carregador portátil (power bank)', 'Agasalho ou casaco leve', 'Cópia digital dos documentos', 'Combinar o transporte até a ida e a volta', 'Deixar a casa em ordem (lixo, gás, janelas)', 'Protetor solar e repelente'],
+      r: ['Fones de ouvido', 'Livro ou entretenimento offline', 'Garrafa de água e lanche para o trajeto', 'Mochila pequena para passeios', 'Saco para roupa suja', 'Travesseiro de pescoço'],
+    },
+    internacional: {
+      o: ['Passaporte válido (com pelo menos 6 meses)', 'Visto ou autorização de entrada, se exigido', 'Seguro viagem', 'Moeda estrangeira ou cartão internacional', 'Certificado de vacinação, se exigido'],
+      i: ['Adaptador de tomada', 'Avisar o banco sobre a viagem', 'Chip ou plano de celular internacional', 'Cópia dos documentos guardada separada do original'],
+      r: ['Aplicativos de tradução baixados', 'Mapas offline'],
+    },
+  };
+  let seq = 0;
+  const novoId = () => Date.now().toString(36) + (seq++).toString(36) + Math.random().toString(36).slice(2, 5);
+  function itensViagem(tipo) {
+    const out = [];
+    const add = (grupo) => ['o', 'i', 'r'].forEach((n) => (grupo[n] || []).forEach((t) => out.push({ id: novoId(), t, n, f: false, meu: false })));
+    add(MODELO_VIAGEM.base);
+    if (tipo === 'internacional') add(MODELO_VIAGEM.internacional);
+    return out;
+  }
 
   const api = {
     pad, ymd, fromYmd, addDays, monthIdx, firstOfMonth, addMonthsFirst, startOfWeek,
     isPendencia, isAtrasadaMes, mesesAtraso, adiamentos, nivel, postpone,
-    shade, textOn, lift, PALETAS, PALETA_PADRAO, stamp, buildIcs, seedState, SEED_CATS,
+    toMin, fromMin, somaMin, DURACOES, ocorre, ocorrencias, rruleDe,
+    shade, textOn, lift, PALETAS, PALETA_PADRAO, stamp, buildIcs, seedState, normalizar, SEED_CATS,
+    NIVEIS_VIAGEM, MODELO_VIAGEM, itensViagem,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.PlannerCore = api;
